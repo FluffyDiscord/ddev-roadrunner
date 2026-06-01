@@ -1,0 +1,33 @@
+# Example RoadRunner config for DDEV — FastCGI mode (nginx fronts RoadRunner).
+#
+# Copy this to your project root as `.rr.yaml` if you are not using
+# fluffydiscord/roadrunner-symfony-bundle's Flex recipe — OR if the recipe created an
+# HTTP-mode `.rr.yaml` (http.address), switch it to the http.fcgi block shown here, because
+# this add-on fronts RoadRunner with nginx over FastCGI (nginx -> fastcgi_pass 127.0.0.1:9000).
+# DDEV bind-mounts your project, so this file stays live and editable — run `ddev restart`
+# (or `ddev rr reset`) to apply. It is yours: no #ddev-generated marker.
+version: "3"
+
+server:
+  command: "php public/index.php"
+  env:
+    - APP_RUNTIME: FluffyDiscord\RoadRunnerBundle\Runtime\Runtime
+
+http:
+  # FastCGI listener (nginx connects here). No http.address — nginx serves HTTP + static files.
+  fcgi:
+    address: tcp://0.0.0.0:9000
+  pool:
+    debug: true   # dev only: a fresh worker per request, so edited PHP is picked up immediately
+
+logs:
+  mode: development
+  channels:
+    http:
+      level: info
+    server:
+      level: info
+      mode: raw
+
+rpc:
+  listen: tcp://127.0.0.1:6001

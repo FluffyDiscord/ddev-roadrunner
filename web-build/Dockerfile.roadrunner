@@ -1,0 +1,6 @@
+#ddev-generated
+# Install the RoadRunner server binary (rr) from the official image.
+# RoadRunner is a static Go binary (CGO_ENABLED=0), so the Alpine-built binary runs on the Debian web image.
+# Pinned for reproducibility — bump the tag to upgrade: https://github.com/roadrunner-server/roadrunner/releases
+COPY --from=ghcr.io/roadrunner-server/roadrunner:2025.1.14 /usr/bin/rr /usr/local/bin/rr
+RUN chmod +x /usr/local/bin/rr && rr --version

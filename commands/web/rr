@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+#ddev-generated
+## Description: Run the RoadRunner CLI (rr) in the web container against your project's .rr.yaml
+## Usage: rr [subcommand] [flags...]
+## Example: "ddev rr reset", "ddev rr workers", "ddev rr jobs", "ddev rr --version"
+## ExecRaw: true
+
+cd /var/www/html || exit 1
+exec /usr/local/bin/rr "$@"

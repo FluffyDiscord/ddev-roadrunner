@@ -1,0 +1,55 @@
+name: roadrunner
+
+project_files:
+  - config.roadrunner.yaml
+  - web-build/Dockerfile.roadrunner
+  - commands/web/rr
+
+ddev_version_constraint: '>= v1.24.10'
+
+pre_install_actions:
+  - |
+    #ddev-description:Checking PHP version for RoadRunner
+    UNSUPPORTED_PHP_VERSIONS=("5.6" "7.0" "7.1" "7.2" "7.3" "7.4" "8.0")
+    if [[ " ${UNSUPPORTED_PHP_VERSIONS[*]} " == *" ${DDEV_PHP_VERSION} "* ]]; then
+      echo "RoadRunner requires PHP 8.1 or newer (8.5 recommended for fluffydiscord/roadrunner-symfony-bundle v5)."
+      echo "Run 'ddev config --php-version=8.5' and try again."
+      exit 2
+    fi
+    case "${DDEV_PHP_VERSION}" in
+      8.1|8.2|8.3|8.4)
+        echo "NOTE: fluffydiscord/roadrunner-symfony-bundle v5 requires PHP 8.5+. You are on PHP ${DDEV_PHP_VERSION}."
+        echo "      Run 'ddev config --php-version=8.5', or pin a bundle version compatible with your PHP."
+        ;;
+    esac
+
+post_install_actions:
+  - |
+    #ddev-description:Checking the RoadRunner / Symfony bundle setup
+    BUNDLES="${DDEV_APPROOT}/config/bundles.php"
+    RRYAML="${DDEV_APPROOT}/.rr.yaml"
+    if [ ! -f "${RRYAML}" ]; then
+      echo ""
+      echo "NOTE: RoadRunner reads its config from your project's own .rr.yaml (DDEV bind-mounts it live;"
+      echo "      this add-on does NOT copy or manage it). No .rr.yaml found yet. Install the bundle:"
+      echo "        ddev composer config extra.symfony.allow-contrib true"
+      echo "        ddev composer require fluffydiscord/roadrunner-symfony-bundle"
+      echo "      (or copy this add-on's example.rr.yaml to your project root)."
+      echo "      IMPORTANT: this add-on fronts RoadRunner with nginx over FastCGI, so your .rr.yaml must use"
+      echo "      http.fcgi.address: tcp://0.0.0.0:9000 (NOT http.address). See example.rr.yaml."
+    elif ! grep -q 'fcgi' "${RRYAML}"; then
+      echo ""
+      echo "NOTE: your .rr.yaml does not use http.fcgi. This add-on fronts RoadRunner with nginx over FastCGI."
+      echo "      Set 'http.fcgi.address: tcp://0.0.0.0:9000' in .rr.yaml (see example.rr.yaml), then 'ddev restart'."
+    fi
+    if [ ! -d "${DDEV_APPROOT}/vendor/fluffydiscord/roadrunner-symfony-bundle" ]; then
+      echo ""
+      echo "Then register the bundle (the Flex recipe does this), swap the kernel trait in src/Kernel.php"
+      echo "(see README), and run 'ddev restart'."
+    elif [ -f "${BUNDLES}" ] && ! grep -q 'FluffyDiscordRoadRunnerBundle' "${BUNDLES}"; then
+      echo ""
+      echo "NOTE: the bundle is installed but NOT registered in config/bundles.php. Add:"
+      echo "        FluffyDiscord\\RoadRunnerBundle\\FluffyDiscordRoadRunnerBundle::class => ['all' => true],"
+      echo "      (or re-run the require after 'ddev composer config extra.symfony.allow-contrib true'),"
+      echo "      swap the kernel trait in src/Kernel.php, ensure RR_RPC is in .env, then 'ddev restart'."
+    fi
