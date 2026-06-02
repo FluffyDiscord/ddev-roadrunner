@@ -5,6 +5,9 @@
 
 # DDEV RoadRunner
 
+> [!NOTE]
+> This add-on was created with the assistance of AI. It has been verified end-to-end against real DDEV + Docker, but review it before relying on it in your environment.
+
 Run your **Symfony** app on [RoadRunner](https://roadrunner.dev/) in [DDEV](https://ddev.com/) — with DDEV's nginx in front, exactly like you'd run it in production.
 
 ## Overview
