@@ -48,11 +48,11 @@ ddev-router ──TLS──► nginx  (webserver_type: nginx-fpm)
                                                             └─ http.pool.debug: true (fresh worker/request)
   web container also runs:
     • web_extra_daemon "roadrunner": /usr/local/bin/rr serve -w /var/www/html  (reads the project's OWN .rr.yaml)
-    • a post-start hook: repoints nginx fastcgi_pass → 127.0.0.1:9000 and reloads nginx (every start)
+    • a markerless .ddev/nginx_full/nginx-site.conf override: nginx fastcgi_pass → 127.0.0.1:9000 (DDEV never regenerates it)
     • php-fpm — idle, kept for DDEV's /phpstatus healthcheck and the /xhprof UI
 ```
 
-nginx terminates TLS, serves static files, and proxies PHP to RoadRunner over FastCGI — the same role it plays for php-fpm, so main-URL routing is the platform's proven path. RoadRunner exposes `http.fcgi.address: tcp://0.0.0.0:9000`; a `post-start` hook re-points nginx at it because DDEV regenerates the nginx config (back to the php-fpm socket) on every start. **Phase-3 verified** end-to-end: RoadRunner's own HTTP-plugin log records the 200s with **zero** php-fpm-socket hits. The detailed ADRs are below; exact file contents are in the Implementation Spec.
+nginx terminates TLS, serves static files, and proxies PHP to RoadRunner over FastCGI — the same role it plays for php-fpm, so main-URL routing is the platform's proven path. RoadRunner exposes `http.fcgi.address: tcp://0.0.0.0:9000`; the add-on ships a **markerless `nginx_full/nginx-site.conf`** that points nginx at it. Because the file lacks DDEV's generated-file marker, DDEV treats it as a user override and never regenerates it — stable across restarts with no runtime patching. **Phase-3 verified** end-to-end: RoadRunner's own HTTP-plugin log records the 200s across the rebuild restart + repeated restarts, and `ddev add-on remove` cleanly reverts nginx to php-fpm. The detailed ADRs are below; exact file contents are in the Implementation Spec.
 
 ## 5. Tech-stack rationale
 
@@ -68,7 +68,7 @@ nginx terminates TLS, serves static files, and proxies PHP to RoadRunner over Fa
 ## 6. MVP features (in scope)
 
 1. `rr` binary baked into the web image (pinned, verified at build via `rr --version`).
-2. DDEV wiring: `webserver_type: nginx-fpm` + `web_extra_daemons` (RoadRunner) + a `post-start` hook re-pointing nginx `fastcgi_pass` at RoadRunner:9000.
+2. DDEV wiring: `webserver_type: nginx-fpm` + `web_extra_daemons` (RoadRunner) + a markerless `nginx_full/nginx-site.conf` override pointing nginx `fastcgi_pass` at RoadRunner:9000 (with a `removal_action` to clean it up).
 3. `example.rr.yaml` shipped as a **FastCGI** reference (`http.fcgi`, debug pool); the add-on installs **no** project `.rr.yaml` — RoadRunner reads the project's own bind-mounted file (ADR-3).
 4. `ddev rr <args>` custom command (generic RoadRunner CLI passthrough: `reset`, `workers`, …).
 5. `pre_install` PHP-version check (hard-fail < 8.1, warn < 8.5).
@@ -90,8 +90,8 @@ nginx terminates TLS, serves static files, and proxies PHP to RoadRunner over Fa
 ## 8. Architecture Decision Records
 
 **ADR-1 — Keep `webserver_type: nginx-fpm`; run RoadRunner as a FastCGI `web_extra_daemon` behind nginx.** *(Revised from the earlier `generic`/HTTP-direct iteration, per the bundle author — RoadRunner runs as a FastCGI backend in their projects.)*
-*Decision:* Keep DDEV's nginx + php-fpm container; run `rr serve` as a supervisord-managed `web_extra_daemon`; install the `rr` binary via a web-build Dockerfile fragment; re-point nginx's `fastcgi_pass` at RoadRunner via a `post-start` hook.
-*Why:* nginx (TLS, static, the symfony front-controller config, `/phpstatus`, `/xhprof`) is reused as-is; only the PHP backend changes (php-fpm → RoadRunner), matching how the user runs RR in prod. *Trade-off:* php-fpm idles, and the nginx override must be applied at runtime via a hook (DDEV regenerates the nginx config each start — see ADR-4).
+*Decision:* Keep DDEV's nginx + php-fpm container; run `rr serve` as a supervisord-managed `web_extra_daemon`; install the `rr` binary via a web-build Dockerfile fragment; re-point nginx's `fastcgi_pass` at RoadRunner via a markerless `nginx_full/nginx-site.conf` override (ADR-4).
+*Why:* nginx (TLS, static, the symfony front-controller config, `/phpstatus`, `/xhprof`) is reused as-is; only the PHP backend changes (php-fpm → RoadRunner), matching how the user runs RR in prod. *Trade-off:* php-fpm idles, and the nginx override is a static file (frozen at the add-on's version — it won't track future DDEV nginx-template changes while installed; acceptable, and reverts on removal — see ADR-4).
 
 **ADR-2 — Deliver the `rr` binary via multi-stage `COPY --from` from the official image.**
 *Decision:* `COPY --from=ghcr.io/roadrunner-server/roadrunner:2025.1.14 /usr/bin/rr /usr/local/bin/rr`.
@@ -101,10 +101,10 @@ nginx terminates TLS, serves static files, and proxies PHP to RoadRunner over Fa
 *Decision:* The add-on ships **no** `.rr.yaml` and copies nothing into the project. The daemon runs `rr serve` from the project root (`directory: /var/www/html`), so RoadRunner reads the project's **own** `.rr.yaml` by default — created by the bundle's Flex recipe, or by the user (the add-on provides `example.rr.yaml` as a reference). DDEV bind-mounts the project, so that file is live-editable and entirely the user's.
 *Why:* A copied, `#ddev-generated` file is fragile — DDEV overwrites it on re-install and deletes it on remove, putting user edits at risk. Using the project's own file makes the config stable, owned, and editable, and removes any port/content conflict with the recipe (which also creates `.rr.yaml`). *Trade-off:* the project must contain a `.rr.yaml` (recipe or copied `example.rr.yaml`); if absent the daemon errors (documented). *Verified in Phase 3 — the daemon reads the project's mounted `.rr.yaml` and serves 200.*
 
-**ADR-4 — nginx → RoadRunner over FastCGI; a `post-start` hook applies the override.**
-*Decision:* RoadRunner listens `http.fcgi.address: tcp://0.0.0.0:9000`. A `post-start` hook rewrites `sites-enabled/nginx-site.conf`'s `fastcgi_pass` from the php-fpm socket to `127.0.0.1:9000` and reloads nginx, on every start.
-*Why a hook (not a shipped file):* DDEV **regenerates** `nginx-site.conf` (php-fpm socket) on every start, discarding a `project_files` replacement — even one without `#ddev-generated` (**Phase-3-verified failure**, caught as a php-fpm false-pass). The hook runs *after* generation, is idempotent (socket-grep-guarded), edits only the main site config (so `/phpstatus` + `/xhprof` keep their php-fpm socket), and reverts cleanly when the add-on (and its hook) is removed.
-*Why FastCGI:* matches how the bundle author runs RoadRunner; nginx handles TLS + static + HTTP/2. *Trade-off:* php-fpm idles (kept for the healthcheck); a brief startup window before the hook reloads nginx routes to php-fpm (harmless — no traffic during `ddev start`). The goridge worker **relay stays pipes** (the user's "tcp/0.0.0.0" referred to the FastCGI listen address, not the relay).
+**ADR-4 — nginx → RoadRunner over FastCGI; a markerless `nginx_full/nginx-site.conf` override applies it.** *(Revised: the earlier iteration used a `post-start` sed-hook under the false belief — below — that DDEV regenerates markerless overrides.)*
+*Decision:* RoadRunner listens `http.fcgi.address: tcp://0.0.0.0:9000`. The add-on ships `.ddev/nginx_full/nginx-site.conf` — a copy of DDEV's own site config with the app's `fastcgi_pass` set to `127.0.0.1:9000` — carrying **no** generated-file marker. DDEV respects it and never regenerates it, so routing is stable across restarts with no runtime patching. A host-side `removal_action` deletes it on uninstall.
+*Why a shipped override (not a hook):* DDEV only regenerates `nginx_full/nginx-site.conf` when it owns it (i.e. its generated-file marker appears as a substring in the file); a markerless file is left verbatim — **Phase-3-verified** to hold across the rebuild restart and repeated restarts. *(The earlier "DDEV regenerates it even without the marker" finding was a measurement error: the override's own comment contained the literal marker token, which tripped DDEV's substring detection. Removing the token from the comment fixed it.)* The override edits only the main site `location ~ \.php$`, so `/phpstatus` + `/xhprof` keep their php-fpm socket via their own `include`s; php-fpm idles but stays healthy. Because markerless files are not auto-removed, the `removal_action` (host context, `${DDEV_APPROOT}`, sentinel-guarded) cleans it up and DDEV restores the php-fpm default on the next start.
+*Trade-off:* the override is a static snapshot of DDEV's template (assumes docroot `public`; edit `root` otherwise), frozen at the add-on's version. DDEV's symfony and php templates are byte-identical here, so it covers both targets; other project types adapt it. *Why FastCGI:* matches how the bundle author runs RoadRunner; nginx handles TLS + static + HTTP/2. The goridge worker **relay stays pipes** (the user's "tcp/0.0.0.0" referred to the FastCGI listen address, not the relay).
 
 **ADR-5 — Default to `http.pool.debug: true` (not a warm worker pool).**
 *Decision:* Ship debug pool in the default `.rr.yaml`.

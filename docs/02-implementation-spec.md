@@ -9,21 +9,22 @@ Every claim about an *external* system carries a citation in [§9](#9-references
 > 1. nginx → RoadRunner over FastCGI on :9000 (chain: ddev-router → nginx (TLS, static) → fastcgi_pass → RR → worker → Symfony).
 > 2. The daemon must invoke **`/usr/local/bin/rr`** — bare `rr` resolves to the bundle's `vendor/bin/rr` (spiral CLI, no `serve`).
 > 3. The bundle must be **registered in `config/bundles.php`** (the Flex recipe does it; skipped non-interactively → 500 `…\WorkerRegistry`).
-> 4. **The nginx override must be applied by a `post-start` hook, not `project_files`.** DDEV regenerates `.ddev/nginx_full/nginx-site.conf` (back to the php-fpm socket) on every start, discarding a shipped replacement — even a no-`#ddev-generated` one. A `post-start` hook re-points `fastcgi_pass` and reloads nginx on every start (proven to stick).
+> 4. **The nginx override is a markerless `.ddev/nginx_full/nginx-site.conf` shipped as a `project_file`** — a copy of DDEV's own site config with the app's PHP `fastcgi_pass` pointed at `127.0.0.1:9000`. DDEV respects any `nginx_full/nginx-site.conf` that lacks its generated-file marker and never regenerates it, so the routing is stable across restarts with **no runtime patching** (verified to hold across the rebuild restart + repeated restarts). A `removal_action` deletes it on uninstall (markerless files are not auto-removed), after which DDEV regenerates its php-fpm default. *(An earlier iteration used a `post-start` sed-hook under the false belief that DDEV regenerates markerless overrides; that "regeneration" was actually our own override file carrying DDEV's marker **token inside a comment**, which trips DDEV's substring detection — never write that token into the override.)*
 > 5. **The add-on does not copy or manage `.rr.yaml`** — RoadRunner reads the project's own bind-mounted `.rr.yaml`, which must use **`http.fcgi`** (not `http.address`). `example.rr.yaml` is the reference.
 
 ---
 
 ## 1. Scope & component model
 
-Components: the manifest (`install.yaml`), the DDEV config overlay (`config.roadrunner.yaml`, which also carries the nginx `post-start` hook), the image fragment (`web-build/Dockerfile.roadrunner`), and the custom command (`commands/web/rr`). `.rr.yaml` and the nginx site config are **not** add-on-managed files (the project owns `.rr.yaml`; DDEV owns the nginx config, which the hook patches at runtime). Phase-2 floors (≥5 anti-patterns; ≥5 "unit"/static + ≥3 integration tests) apply to the add-on as a whole.
+Components: the manifest (`install.yaml`), the DDEV config overlay (`config.roadrunner.yaml`), the nginx override (`nginx_full/nginx-site.conf`), the image fragment (`web-build/Dockerfile.roadrunner`), and the custom command (`commands/web/rr`). `.rr.yaml` is **not** an add-on-managed file (the project owns it). The nginx override **is** add-on-managed but markerless (so DDEV won't regenerate it); a `removal_action` cleans it up. Phase-2 floors (≥5 anti-patterns; ≥5 "unit"/static + ≥3 integration tests) apply to the add-on as a whole.
 
 ## 2. Repository layout
 
 ```
 ddev-roadrunner/
 ├── install.yaml                          # add-on manifest (NOT a project_file)
-├── config.roadrunner.yaml                # project_file → .ddev/   (#ddev-generated): nginx-fpm + RR daemon + post-start hook
+├── config.roadrunner.yaml                # project_file → .ddev/   (#ddev-generated): nginx-fpm + RR FastCGI daemon
+├── nginx_full/nginx-site.conf            # project_file → .ddev/nginx_full/ (MARKERLESS): nginx → RoadRunner :9000 override
 ├── web-build/Dockerfile.roadrunner       # project_file → .ddev/web-build/ (#ddev-generated): installs the rr binary
 ├── commands/web/rr                       # project_file → .ddev/commands/web/ (#ddev-generated): `ddev rr <args>` passthrough
 ├── example.rr.yaml                        # FastCGI reference config users copy if not using the recipe (NOT installed)
@@ -33,18 +34,19 @@ ddev-roadrunner/
 └── .github/workflows/tests.yml
 ```
 
-All installed files are `#ddev-generated` under `.ddev/`, so DDEV removes them on `ddev add-on remove` and the nginx override reverts automatically (the hook is gone, so DDEV's next-start config points back at php-fpm). **No `removal_actions` needed; nothing is written outside `.ddev/`.**
+Most installed files are `#ddev-generated`, so DDEV removes them on `ddev add-on remove`. The one exception is `nginx_full/nginx-site.conf`, which **must** be markerless (or DDEV would regenerate it back to the php-fpm socket on every start). Because DDEV does not auto-remove markerless files, a **`removal_action`** deletes it on uninstall; DDEV then regenerates its php-fpm default on the next start. Nothing is written outside `.ddev/`.
 
 ## 3. File-by-file specification
 
 ### 3.1 `install.yaml`
 
-`project_files`: the three `.ddev/` files above. `ddev_version_constraint: '>= v1.24.10'`. `pre_install_actions`: the PHP-version gate (hard-fail < 8.1; warn 8.1–8.4 re bundle v5). `post_install_actions`: read-only guidance only (ADR-6) — it checks for a project `.rr.yaml` (and warns if it lacks `fcgi`), bundle install, and bundle registration in `config/bundles.php`, pointing at the recipe or the manual steps. No file copied into the project; no `removal_actions`.
+`project_files`: the four `.ddev/` files above. `ddev_version_constraint: '>= v1.24.10'`. `pre_install_actions`: the PHP-version gate (hard-fail < 8.1; warn 8.1–8.4 re bundle v5). `post_install_actions`: read-only guidance only (ADR-6) — it checks for a project `.rr.yaml` (and warns if it lacks `fcgi`), bundle install, and bundle registration in `config/bundles.php`, pointing at the recipe or the manual steps. `removal_actions`: one host-side action deleting the markerless `nginx_full/nginx-site.conf` (DDEV won't auto-remove a markerless file). No file copied into the user's source tree.
 
 ```yaml
 name: roadrunner
 project_files:
   - config.roadrunner.yaml
+  - nginx_full/nginx-site.conf
   - web-build/Dockerfile.roadrunner
   - commands/web/rr
 ddev_version_constraint: '>= v1.24.10'
@@ -72,6 +74,13 @@ post_install_actions:
     elif [ -f "${BUNDLES}" ] && ! grep -q 'FluffyDiscordRoadRunnerBundle' "${BUNDLES}"; then
       echo "Bundle installed but not registered: add FluffyDiscord\\RoadRunnerBundle\\FluffyDiscordRoadRunnerBundle::class => ['all' => true] to config/bundles.php."
     fi
+removal_actions:
+  - |
+    #ddev-description:Restoring php-fpm nginx routing
+    OVERRIDE="${DDEV_APPROOT}/.ddev/nginx_full/nginx-site.conf"   # removal_actions run on the host
+    if [ -f "${OVERRIDE}" ] && grep -q 'ddev-roadrunner-managed' "${OVERRIDE}"; then
+      rm -f "${OVERRIDE}"; echo "Removed the RoadRunner nginx override; DDEV restores php-fpm routing on the next start."
+    fi
 ```
 
 ### 3.2 `config.roadrunner.yaml`
@@ -83,12 +92,35 @@ web_extra_daemons:
   - name: "roadrunner"
     command: "/usr/local/bin/rr serve -w /var/www/html"
     directory: /var/www/html
-hooks:
-  post-start:
-    - exec: "if grep -q 'fastcgi_pass unix:/run/php-fpm.sock;' /etc/nginx/sites-enabled/nginx-site.conf; then sudo sed -i 's|fastcgi_pass unix:/run/php-fpm.sock;|fastcgi_pass 127.0.0.1:9000;|g' /etc/nginx/sites-enabled/nginx-site.conf && sudo nginx -s reload; fi"
 ```
 
-*Notes:* `webserver_type: nginx-fpm` keeps DDEV's nginx (it also resets a project left on `generic`). `rr serve` runs in the **foreground** (supervisord daemonizes it); **absolute `/usr/local/bin/rr`** (bare `rr` = the bundle's `vendor/bin/rr`, no `serve`); no `-c` (rr reads the project's own `.rr.yaml` from the working dir). The **`post-start` hook** is the only reliable way to apply the nginx override — DDEV regenerates `nginx-site.conf` (php-fpm socket) on every start, so the hook re-points `fastcgi_pass` at RoadRunner and reloads nginx each start. The hook is **idempotent** (guarded by the socket grep) and edits only `sites-enabled/nginx-site.conf` — the `/phpstatus` healthcheck (`monitoring.conf`) and `/xhprof` (`common.d/xhprof.conf`) keep their php-fpm socket, so php-fpm idles but stays healthy. `sudo` is used because the hook runs as the web user and nginx's master is root (Phase-3-verified working). Removing the add-on removes this file → the hook is gone → DDEV's next start reverts nginx to php-fpm.
+*Notes:* `webserver_type: nginx-fpm` keeps DDEV's nginx (it also resets a project left on `generic`). `rr serve` runs in the **foreground** (supervisord daemonizes it); **absolute `/usr/local/bin/rr`** (bare `rr` = the bundle's `vendor/bin/rr`, no `serve`); no `-c` (rr reads the project's own `.rr.yaml` from the working dir). nginx is repointed at RoadRunner by the markerless `nginx_full/nginx-site.conf` override (§3.2a), **not** a runtime hook — so there is no per-start patching and no startup window where traffic could hit php-fpm.
+
+### 3.2a `nginx_full/nginx-site.conf` (the nginx override)
+
+A copy of DDEV's default site config with **one** change: the app's PHP `fastcgi_pass` is `127.0.0.1:9000` (RoadRunner) instead of the php-fpm socket. It carries **no** `#ddev-generated` marker — so DDEV treats it as a user override and never regenerates it (verified to hold across the rebuild restart and repeated restarts). The `/phpstatus` healthcheck (`monitoring.conf`) and `/xhprof` (`common.d/xhprof.conf`) are pulled in via `include` directives that keep their own php-fpm socket, so php-fpm idles but stays healthy.
+
+```nginx
+# ddev-roadrunner-managed   ← sentinel for the removal_action; do NOT write the literal generated-file marker token anywhere in this file
+server {
+    listen 80 default_server; listen 443 ssl default_server;
+    root /var/www/html/public;                       # docroot `public` (Symfony default); edit if yours differs
+    ssl_certificate /etc/ssl/certs/master.crt; ssl_certificate_key /etc/ssl/certs/master.key;
+    include /etc/nginx/monitoring.conf;              # /phpstatus → php-fpm socket (unchanged)
+    location / { try_files $uri $uri/ /index.php?$query_string; }
+    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_pass 127.0.0.1:9000;                 # ← the one change vs. DDEV's default (was the php-fpm socket)
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        # …remaining params identical to DDEV's template…
+    }
+    include /etc/nginx/common.d/*.conf;              # /xhprof → php-fpm socket (unchanged)
+    include /mnt/ddev_config/nginx/*.conf;
+}
+```
+
+*Critical gotcha:* DDEV decides whether it owns this file by searching for its generated-file marker as a **substring anywhere** in the file. If that token appears even inside a comment, DDEV regenerates the file (reverting to the php-fpm socket). The override must therefore never contain that literal token — describe it indirectly (as this file does). Because the file is markerless, `ddev add-on remove` will **not** auto-delete it; the `removal_action` in §3.1 does (host-side, guarded by the `ddev-roadrunner-managed` sentinel), and DDEV regenerates its php-fpm default on the next start.
 
 ### 3.3 `.rr.yaml` (owned by the project) & `example.rr.yaml`
 
@@ -148,11 +180,11 @@ exec /usr/local/bin/rr "$@"
 | # | Assumption | If wrong, then… |
 |---|------------|-----------------|
 | A1 | Target PHP 8.5 (bundle v5); add-on infra works on 8.1+ | Pin a bundle version for the project's PHP |
-| A2 | Symfony **docroot `public`**; DDEV's symfony nginx config is what the hook patches | Non-`public` docroots use a different nginx root — verify the generated `nginx-site.conf` (OQ-4) |
+| A2 | Symfony **docroot `public`**; the shipped override's `root` is `/var/www/html/public` (DDEV's symfony & php configs are byte-identical here) | Non-`public` docroots need the `root` line in the override edited (OQ-4) |
 | A3 | **VERIFIED:** nginx → FastCGI → RoadRunner:9000 serves the app (nginx terminates TLS, serves static) | — |
-| A4 | **VERIFIED:** the `post-start` hook (in a config partial) merges, runs, and `sudo nginx -s reload` works each start | If a DDEV change breaks hook-merge, move the hook to the project's `config.yaml` |
+| A4 | **VERIFIED:** a markerless `.ddev/nginx_full/nginx-site.conf` is respected by DDEV and held across the rebuild restart + repeated restarts (no runtime patching) | If a DDEV change starts overwriting markerless overrides, fall back to a `post-start` hook |
 | A5 | **VERIFIED:** the static `rr` binary runs on the Debian web image | — |
-| A6 | Infra-only; no app/`.rr.yaml`/nginx-file mutation (ADR-3/6); nginx patched at runtime via the hook | — |
+| A6 | Infra-only; no app/`.rr.yaml` mutation (ADR-3/6); the only nginx change is the markerless override file the add-on owns | — |
 | A7 | **VERIFIED:** RR `2025.1.14` is protocol-compatible with the bundle | — |
 | A8 | php-fpm idling under `nginx-fpm` is harmless and required (healthcheck `/phpstatus`, `/xhprof`) — do not disable it | — |
 | A9 | The project's `.rr.yaml` uses `http.fcgi:9000` (recipe default is `http.address` → user switches it, or copies `example.rr.yaml`) | nginx FastCGI → an HTTP-mode RR fails; post_install warns; user sets `http.fcgi` |
@@ -164,14 +196,16 @@ exec /usr/local/bin/rr "$@"
 | OQ-1 | *(Resolved)* "RR_RELAY / tcp / 0.0.0.0" = the `http.fcgi` listen address, not the goridge relay. Relay stays **pipes** (RR default; fastest). | No | Resolved |
 | OQ-2 | Auto-register the bundle / switch `.rr.yaml` to fcgi for the user, vs. document it (ADR-3/6)? | No | Document |
 | OQ-3 | Pin RR to `2025.1.14` or track latest? | No | Pin |
-| OQ-4 | Support non-`public` docroots (the hook + nginx root assume `public`)? | No | Assume `public` |
+| OQ-4 | Support non-`public` docroots (the override's nginx `root` assumes `public`)? | No | Assume `public`; document editing the override's `root` |
 | OQ-5 | Stop php-fpm entirely (vs. let it idle)? | No | Let it idle (healthcheck depends on it) |
 
 ## 6. Anti-Patterns (DO NOT)
 
 | Don't | Do instead | Why |
 |-------|-----------|-----|
-| Ship the nginx config via `project_files` (`.ddev/nginx_full/nginx-site.conf`) | Re-point `fastcgi_pass` via a **`post-start` hook** + `nginx -s reload` | DDEV **regenerates** `nginx-site.conf` (php-fpm socket) on every start, discarding the shipped file — even without `#ddev-generated` *(Phase-3)* |
+| Write DDEV's generated-file marker token into the override (even in a comment) | Ship a **markerless** `nginx_full/nginx-site.conf`; describe the marker indirectly | DDEV matches that token as a **substring anywhere** in the file → regenerates it back to the php-fpm socket *(Phase-3 — this exact bug bit the override's own comment)* |
+| Rely on `ddev add-on remove` to delete the markerless override | Add a host-side `removal_action` (`${DDEV_APPROOT}/.ddev/...`) | DDEV refuses to auto-remove files without its marker ("Unwilling to remove…") *(Phase-3)* |
+| Put removal cleanup at the container path `/var/www/html/.ddev/…` | Use `${DDEV_APPROOT}/.ddev/…` | `removal_actions` run on the **host**, not in the web container *(Phase-3)* |
 | Disable php-fpm under `nginx-fpm` | Let it idle | DDEV's healthcheck `/phpstatus` and the `/xhprof` UI fastcgi_pass to the php-fpm socket |
 | Use `http.address` in the project's `.rr.yaml` | Use `http.fcgi.address: tcp://0.0.0.0:9000` | This add-on fronts RoadRunner with nginx over FastCGI; HTTP mode won't be reached |
 | Invoke bare `rr` in the daemon / `rr` command | Absolute `/usr/local/bin/rr` | The bundle's `vendor/bin/rr` (spiral CLI) is first on PATH; no `serve`/`reset` *(Phase-3)* |
@@ -185,17 +219,17 @@ exec /usr/local/bin/rr "$@"
 ## 7. Test Case Specifications
 
 ### "Unit" / static (≥5)
-TC-001 YAML validity (`config.roadrunner.yaml`, `example.rr.yaml`); TC-002 `#ddev-generated` on each installed file; TC-003 shellcheck (`commands/web/rr`, action bodies, the hook one-liner); TC-004 Dockerfile builds + `rr --version`; TC-005 `install.yaml` schema; TC-006 PHP gate (8.0→exit2; 8.4→warn; 8.5→silent).
+TC-001 YAML validity (`config.roadrunner.yaml`, `example.rr.yaml`); TC-002 `#ddev-generated` on each installed file **except `nginx_full/nginx-site.conf`, which must NOT contain the marker token** (assert its absence); TC-003 shellcheck (`commands/web/rr`, action bodies); TC-004 Dockerfile builds + `rr --version`; TC-005 `install.yaml` schema; TC-006 PHP gate (8.0→exit2; 8.4→warn; 8.5→silent); TC-007 the override's `fastcgi_pass` is `127.0.0.1:9000` and it carries the `ddev-roadrunner-managed` sentinel.
 
 ### Integration (bats, ≥3) — all Phase-3-proven
 | ID | Flow | Key verification |
 |----|------|------------------|
-| **IT-001 (`symfony`, PRIMARY)** | config symfony/public/8.5; start; `composer create-project symfony/skeleton:^7.4`; `composer require` bundle; kernel-trait `sed`; `RR_RPC`→`.env`; copy `bundles.php`(register) + `example.rr.yaml`→`.rr.yaml`(fcgi) + `PingController.php` + `routes.yaml`; `ddev add-on get`; `ddev restart` | `ddev exec grep 'fastcgi_pass 127.0.0.1:9000' /etc/nginx/sites-enabled/nginx-site.conf` (hook applied); `curl https` → `roadrunner-symfony-ok pid=`; `curl -I http` → `200`; **RR's http log shows the request + zero php-fpm-socket upstream hits** (RR served, not php-fpm); `supervisorctl status` → `webextradaemons:roadrunner RUNNING`; `ddev exec /usr/local/bin/rr --version` |
-| IT-002 (`infra`) | docroot public; `composer init`+`require spiral/roadrunner-http nyholm/psr7`; `example.rr.yaml`→`.rr.yaml`; `psr7-index.php`→`public/index.php`; `add-on get`; restart | nginx→9000; `curl` → `RoadRunner OK pid=`; `ddev rr reset` ok |
-| IT-003 (`removal`) | install; `ddev add-on remove roadrunner`; restart | `config.roadrunner.yaml` gone; nginx reverts to php-fpm; project `.rr.yaml` untouched |
+| **IT-001 (`symfony`, PRIMARY)** | config symfony/public/8.5; start; `composer create-project symfony/skeleton:^7.4`; `composer require` bundle; kernel-trait `sed`; `RR_RPC`→`.env`; copy `bundles.php`(register) + `example.rr.yaml`→`.rr.yaml`(fcgi) + `PingController.php` + `routes.yaml`; `ddev add-on get`; `ddev restart` | `ddev exec grep 'fastcgi_pass 127.0.0.1:9000' /etc/nginx/sites-enabled/nginx-site.conf` (override applied); `curl https` → `roadrunner-symfony-ok pid=`; `curl -I http` → `200`; `supervisorctl status` → `webextradaemons:roadrunner RUNNING`; `ddev exec /usr/local/bin/rr --version` |
+| IT-002 (`infra`) | docroot public; `composer init`+`require spiral/roadrunner-http nyholm/psr7`; **write a FastCGI `.rr.yaml`**; `psr7-index.php`→`public/index.php`; `add-on get` (assert `.ddev/nginx_full/nginx-site.conf` exists); restart | `fastcgi_pass 127.0.0.1:9000`; `curl` → `RoadRunner OK pid=` (a raw PSR-7 worker **only** RoadRunner can serve — php-fpm would STDIN-fatal, so this is the strongest RR-serves proof); static asset served; `ddev rr reset` ok |
+| IT-003 (`removal`) | install (assert override present); `ddev add-on remove roadrunner`; restart | `config.roadrunner.yaml` gone; **`.ddev/nginx_full/nginx-site.conf` deleted by the removal_action**; nginx reverts to php-fpm; project `.rr.yaml` untouched |
 | IT-004 (`php-gate`) | `ddev config --php-version=8.0`; `ddev add-on get` | fails; output mentions PHP 8.1 |
 
-*IT-001 is the non-skippable gate for S1. The `fastcgi_pass 9000` check + RR's own http-log + zero php-fpm-socket hits together prove RoadRunner (not idle php-fpm) serves the app — a 200 alone would false-pass through php-fpm.*
+*IT-002 (`infra`) is the strongest RoadRunner-serves proof: a raw PSR-7 worker fatals under php-fpm (the goridge STDIN relay is a CLI-only constant), so a `RoadRunner OK pid=` 200 can only come from RoadRunner. IT-001 (`symfony`, the primary gate) proves it via the `fastcgi_pass 127.0.0.1:9000` override check + the `roadrunner` daemon RUNNING — a 200 alone would false-pass through php-fpm.*
 
 ## 8. Error Handling Matrix
 
@@ -205,7 +239,7 @@ TC-001 YAML validity (`config.roadrunner.yaml`, `example.rr.yaml`); TC-002 `#dde
 | `rr` wrong arch/tag | `rr --version` in Dockerfile build | bump tag |
 | `Command "serve" is not defined` | daemon crash loop in `ddev logs` | use `/usr/local/bin/rr` (fixed §3.2) |
 | 500 `…\WorkerRegistry` | curl 500 | register the bundle in `config/bundles.php` |
-| 200 served by php-fpm, not RR (hook didn't apply) | `fastcgi_pass` still socket; RR http-log empty; php-fpm-socket upstream in `ddev logs` | confirm the `post-start` hook ran (config-partial merge) + `sudo nginx -s reload` succeeded |
+| 200 served by php-fpm, not RR (override not applied) | `fastcgi_pass` still socket after restart | confirm `.ddev/nginx_full/nginx-site.conf` exists and is **markerless** — if it contains DDEV's generated-file marker token (even in a comment) DDEV regenerates it back to the socket |
 | 502 (nginx → :9000, RR down) | curl 502 | check RR daemon (`supervisorctl status`), `.rr.yaml` uses `http.fcgi:9000`, RR_RPC matches |
 | `.rr.yaml` uses `http.address` not `fcgi` | RR not reachable via FastCGI | set `http.fcgi.address: tcp://0.0.0.0:9000` (post_install warns) |
 | STDOUT corruption ("CRC verification failed") | `ddev logs` | output → STDERR; ensure `APP_RUNTIME`; `display_errors=stderr` |

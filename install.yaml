@@ -4,6 +4,7 @@ project_files:
   - config.roadrunner.yaml
   - web-build/Dockerfile.roadrunner
   - commands/web/rr
+  - nginx_full/nginx-site.conf
 
 ddev_version_constraint: '>= v1.24.10'
 
@@ -52,4 +53,18 @@ post_install_actions:
       echo "        FluffyDiscord\\RoadRunnerBundle\\FluffyDiscordRoadRunnerBundle::class => ['all' => true],"
       echo "      (or re-run the require after 'ddev composer config extra.symfony.allow-contrib true'),"
       echo "      swap the kernel trait in src/Kernel.php, ensure RR_RPC is in .env, then 'ddev restart'."
+    fi
+
+removal_actions:
+  # The nginx override is intentionally markerless (so DDEV never regenerates it), which means
+  # DDEV does not auto-remove it. Delete it here so removing the add-on restores php-fpm routing
+  # (DDEV regenerates its default nginx-site.conf on the next start). Guarded by our sentinel so
+  # a hand-customized override is left alone.
+  - |
+    #ddev-description:Restoring php-fpm nginx routing
+    # removal_actions run on the host, so use the host project path (DDEV_APPROOT).
+    OVERRIDE="${DDEV_APPROOT}/.ddev/nginx_full/nginx-site.conf"
+    if [ -f "${OVERRIDE}" ] && grep -q 'ddev-roadrunner-managed' "${OVERRIDE}"; then
+      rm -f "${OVERRIDE}"
+      echo "Removed the RoadRunner nginx override; DDEV restores php-fpm routing on the next start."
     fi

@@ -1,7 +1,9 @@
 #ddev-generated
 # RoadRunner runs as a FastCGI backend on :9000; DDEV's nginx fronts it.
-# DDEV regenerates nginx-site.conf on every start (back to the php-fpm socket), so a
-# post-start hook repoints fastcgi_pass at RoadRunner (127.0.0.1:9000) and reloads nginx.
+# nginx is repointed at RoadRunner via a static .ddev/nginx_full/nginx-site.conf override
+# that the add-on generates at install time (see install.yaml post_install_actions). DDEV
+# respects that file (no #ddev-generated marker) and never regenerates it, so the routing
+# is stable across restarts — no runtime patching of the nginx config.
 # php-fpm stays up but idle — DDEV's healthcheck (/phpstatus) and the /xhprof UI keep using it.
 webserver_type: nginx-fpm
 web_extra_daemons:
@@ -9,6 +11,3 @@ web_extra_daemons:
     # rr reads the project's OWN .rr.yaml (bind-mounted live); it must use http.fcgi (see example.rr.yaml).
     command: "/usr/local/bin/rr serve -w /var/www/html"
     directory: /var/www/html
-hooks:
-  post-start:
-    - exec: "if grep -q 'fastcgi_pass unix:/run/php-fpm.sock;' /etc/nginx/sites-enabled/nginx-site.conf; then sudo sed -i 's|fastcgi_pass unix:/run/php-fpm.sock;|fastcgi_pass 127.0.0.1:9000;|g' /etc/nginx/sites-enabled/nginx-site.conf && sudo nginx -s reload; fi"

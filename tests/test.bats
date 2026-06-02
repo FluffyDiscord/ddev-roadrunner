@@ -84,7 +84,11 @@ teardown() {
   assert_success
   assert_output --partial "HTTP/1.1 200"
 
-  # Proves RoadRunner (not nginx/php-fpm, which `generic` does not run) is serving.
+  # nginx (still nginx-fpm) forwards PHP to RoadRunner's FastCGI listener, not the php-fpm socket.
+  run ddev exec grep -m1 'fastcgi_pass 127.0.0.1:9000;' /etc/nginx/sites-enabled/nginx-site.conf
+  assert_success
+
+  # The RoadRunner FastCGI backend daemon is running.
   run ddev exec supervisorctl status
   assert_output --regexp 'webextradaemons:roadrunner[[:space:]]+RUNNING'
 
@@ -110,11 +114,37 @@ teardown() {
   cp "${DIR}/tests/testdata/psr7-index.php" public/index.php
   cp "${DIR}/tests/testdata/public-asset.txt" public/public-asset.txt
 
+  # RoadRunner reads the project's OWN .rr.yaml (the add-on does not ship one). A raw PSR-7
+  # worker needs FastCGI mode (http.fcgi) so DDEV's nginx can front it. Without this file
+  # `rr serve` cannot start and nginx would fall back to php-fpm executing the worker as a
+  # web script — which fatals on the goridge STDIN relay (CLI-only constant). Its presence is
+  # what makes this test prove RoadRunner (not php-fpm) is serving.
+  cat > .rr.yaml <<'YAML'
+version: "3"
+server:
+  command: "php public/index.php"
+http:
+  fcgi:
+    address: tcp://0.0.0.0:9000
+  pool:
+    debug: true
+rpc:
+  listen: tcp://127.0.0.1:6001
+YAML
+
   run ddev add-on get "${DIR}"
   assert_success
+  # The add-on installs a markerless nginx override that repoints PHP at RoadRunner.
+  assert_file_exist .ddev/nginx_full/nginx-site.conf
   run ddev restart -y
   assert_success
 
+  # nginx must forward PHP to RoadRunner (:9000), not the php-fpm socket.
+  run ddev exec grep -m1 'fastcgi_pass 127.0.0.1:9000;' /etc/nginx/sites-enabled/nginx-site.conf
+  assert_success
+
+  # A raw PSR-7 worker can ONLY be served by RoadRunner — php-fpm would fatal on the STDIN
+  # relay. So this 200 is proof RoadRunner is serving via FastCGI.
   run curl -sf https://${PROJNAME}.ddev.site
   assert_success
   assert_output --partial "RoadRunner OK pid="
@@ -123,7 +153,7 @@ teardown() {
   assert_success
   assert_output --partial "static-ok"
 
-  run ddev rr-reset
+  run ddev rr reset
   assert_success
 }
 
@@ -141,11 +171,13 @@ teardown() {
   run ddev add-on get "${DIR}"
   assert_success
   assert_file_exist .ddev/config.roadrunner.yaml
+  assert_file_exist .ddev/nginx_full/nginx-site.conf   # the markerless nginx override
 
   run ddev add-on remove roadrunner
   assert_success
-  assert_file_not_exist .ddev/config.roadrunner.yaml   # add-on's #ddev-generated files are removed
-  assert_file_exist .rr.yaml                            # the project's .rr.yaml is untouched
+  assert_file_not_exist .ddev/config.roadrunner.yaml      # add-on's #ddev-generated files are removed
+  assert_file_not_exist .ddev/nginx_full/nginx-site.conf  # removal_actions delete the markerless override
+  assert_file_exist .rr.yaml                              # the project's .rr.yaml is untouched
 
   run ddev restart -y
   assert_success

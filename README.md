@@ -22,7 +22,7 @@ ddev-router ──TLS──► nginx ──fastcgi_pass 127.0.0.1:9000──► 
 ```
 
 - `webserver_type` stays **`nginx-fpm`**: nginx terminates TLS, serves static files, and proxies PHP over FastCGI to RoadRunner — the same role it plays for php-fpm.
-- A **post-start hook** repoints nginx's `fastcgi_pass` from the php-fpm socket to RoadRunner (`127.0.0.1:9000`) and reloads nginx on every `ddev start`.
+- The add-on installs `.ddev/nginx_full/nginx-site.conf` — a copy of DDEV's own site config with just the app's PHP `fastcgi_pass` pointed at RoadRunner (`127.0.0.1:9000`). It carries no DDEV generated-file marker, so DDEV treats it as a user override and never regenerates it: the routing is stable across restarts with no runtime patching. `ddev add-on remove roadrunner` deletes it and DDEV restores the php-fpm default. (Assumes docroot `public`; edit `root` in that file if yours differs.)
 - php-fpm stays running but **idle** — DDEV's container healthcheck (`/phpstatus`) and the `/xhprof` UI keep using it; your app traffic goes to RoadRunner.
 
 ## Requirements
