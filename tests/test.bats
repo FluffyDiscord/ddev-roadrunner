@@ -194,3 +194,54 @@ YAML
   assert_failure
   assert_output --partial "8.1"
 }
+
+# bats test_tags=config
+@test "CONFIG: non-default docroot + RR_CONFIG_FILE knobs are honored" {
+  set -eu -o pipefail
+
+  # Non-default docroot (web) and a non-default RoadRunner config filename.
+  mkdir -p web
+  run ddev config --project-name="${PROJNAME}" --docroot=web --php-version=8.5
+  assert_success
+  # The config-file knob: RoadRunner should load .rr.fcgi.yaml, NOT .rr.yaml.
+  run ddev dotenv set .ddev/.env.web --rr-config-file=.rr.fcgi.yaml
+  assert_success
+  run ddev start -y
+  assert_success
+
+  run ddev composer init --no-interaction --name=test/config
+  assert_success
+  run ddev composer require spiral/roadrunner-http nyholm/psr7
+  assert_success
+  cp "${DIR}/tests/testdata/psr7-index.php" web/index.php
+
+  # Custom-named config (deliberately NOT .rr.yaml) referencing the web/ docroot.
+  cat > .rr.fcgi.yaml <<'YAML'
+version: "3"
+server:
+  command: "php web/index.php"
+http:
+  fcgi:
+    address: tcp://0.0.0.0:9000
+  pool:
+    debug: true
+rpc:
+  listen: tcp://127.0.0.1:6001
+YAML
+
+  run ddev add-on get "${DIR}"
+  assert_success
+  # docroot knob: post_install set the override root to the project docroot (web).
+  run grep -q 'root /var/www/html/web;' .ddev/nginx_full/nginx-site.conf
+  assert_success
+  run ddev restart -y
+  assert_success
+
+  # No .rr.yaml exists, so a 200 proves RoadRunner loaded .rr.fcgi.yaml via RR_CONFIG_FILE.
+  assert_file_not_exist .rr.yaml
+  run ddev exec grep -m1 'fastcgi_pass 127.0.0.1:9000;' /etc/nginx/sites-enabled/nginx-site.conf
+  assert_success
+  run curl -sf https://${PROJNAME}.ddev.site
+  assert_success
+  assert_output --partial "RoadRunner OK pid="
+}

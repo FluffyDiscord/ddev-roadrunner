@@ -26,6 +26,17 @@ pre_install_actions:
 
 post_install_actions:
   - |
+    #ddev-description:Pointing the nginx override at the project docroot
+    # The shipped override ships with `root /var/www/html/public`. Set it to the project's
+    # actual docroot (ddev config --docroot, default public) so it works for any docroot.
+    # Runs on the host; the override lives at the host path under DDEV_APPROOT.
+    DOCROOT="${DDEV_DOCROOT:-public}"
+    OVERRIDE="${DDEV_APPROOT}/.ddev/nginx_full/nginx-site.conf"
+    if [ -f "${OVERRIDE}" ] && grep -q 'ddev-roadrunner-managed' "${OVERRIDE}"; then
+      sed -i "s|root /var/www/html/public;|root /var/www/html/${DOCROOT};|" "${OVERRIDE}"
+      echo "nginx override root set to /var/www/html/${DOCROOT}."
+    fi
+  - |
     #ddev-description:Checking the RoadRunner / Symfony bundle setup
     BUNDLES="${DDEV_APPROOT}/config/bundles.php"
     RRYAML="${DDEV_APPROOT}/.rr.yaml"

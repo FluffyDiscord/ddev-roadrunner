@@ -36,6 +36,7 @@ jobs:
           - infra
           - removal
           - php-gate
+          - config
       fail-fast: false
 
     runs-on: ubuntu-latest

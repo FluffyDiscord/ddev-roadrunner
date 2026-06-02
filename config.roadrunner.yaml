@@ -9,5 +9,9 @@ webserver_type: nginx-fpm
 web_extra_daemons:
   - name: "roadrunner"
     # rr reads the project's OWN .rr.yaml (bind-mounted live); it must use http.fcgi (see example.rr.yaml).
-    command: "/usr/local/bin/rr serve -w /var/www/html"
+    # RR_CONFIG_FILE (default .rr.yaml) selects which config file rr loads. Adjust it with:
+    #   ddev dotenv set .ddev/.env.web --rr-config-file=.rr.dev.yaml && ddev restart
+    # bash -c expands the env var (.ddev/.env.web is injected into the web container); exec keeps
+    # rr in the foreground so supervisord manages it.
+    command: "bash -c 'exec /usr/local/bin/rr serve -w /var/www/html -c ${RR_CONFIG_FILE:-.rr.yaml}'"
     directory: /var/www/html

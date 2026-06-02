@@ -40,7 +40,7 @@ Most installed files are `#ddev-generated`, so DDEV removes them on `ddev add-on
 
 ### 3.1 `install.yaml`
 
-`project_files`: the four `.ddev/` files above. `ddev_version_constraint: '>= v1.24.10'`. `pre_install_actions`: the PHP-version gate (hard-fail < 8.1; warn 8.1–8.4 re bundle v5). `post_install_actions`: read-only guidance only (ADR-6) — it checks for a project `.rr.yaml` (and warns if it lacks `fcgi`), bundle install, and bundle registration in `config/bundles.php`, pointing at the recipe or the manual steps. `removal_actions`: one host-side action deleting the markerless `nginx_full/nginx-site.conf` (DDEV won't auto-remove a markerless file). No file copied into the user's source tree.
+`project_files`: the four `.ddev/` files above. `ddev_version_constraint: '>= v1.24.10'`. `pre_install_actions`: the PHP-version gate (hard-fail < 8.1; warn 8.1–8.4 re bundle v5). `post_install_actions`: (1) set the override's `root` to `${DDEV_DOCROOT:-public}` (the **docroot knob** — patches the add-on's own override file, not user source, so ADR-6 holds); (2) read-only guidance — checks for a project `.rr.yaml` (warns if it lacks `fcgi`), bundle install, and registration in `config/bundles.php`. `removal_actions`: one host-side action deleting the markerless `nginx_full/nginx-site.conf` (DDEV won't auto-remove a markerless file). No file copied into the user's source tree.
 
 ```yaml
 name: roadrunner
@@ -90,11 +90,12 @@ removal_actions:
 webserver_type: nginx-fpm
 web_extra_daemons:
   - name: "roadrunner"
-    command: "/usr/local/bin/rr serve -w /var/www/html"
+    # RR_CONFIG_FILE (default .rr.yaml) is honored via bash -c; set it in .ddev/.env.web.
+    command: "bash -c 'exec /usr/local/bin/rr serve -w /var/www/html -c ${RR_CONFIG_FILE:-.rr.yaml}'"
     directory: /var/www/html
 ```
 
-*Notes:* `webserver_type: nginx-fpm` keeps DDEV's nginx (it also resets a project left on `generic`). `rr serve` runs in the **foreground** (supervisord daemonizes it); **absolute `/usr/local/bin/rr`** (bare `rr` = the bundle's `vendor/bin/rr`, no `serve`); no `-c` (rr reads the project's own `.rr.yaml` from the working dir). nginx is repointed at RoadRunner by the markerless `nginx_full/nginx-site.conf` override (§3.2a), **not** a runtime hook — so there is no per-start patching and no startup window where traffic could hit php-fpm.
+*Notes:* `webserver_type: nginx-fpm` keeps DDEV's nginx (it also resets a project left on `generic`). **Absolute `/usr/local/bin/rr`** (bare `rr` = the bundle's `vendor/bin/rr`, no `serve`). The command is wrapped in **`bash -c '… exec …'`** so the shell expands `${RR_CONFIG_FILE:-.rr.yaml}` — the **config-path knob** (`-c`), adjustable via `ddev dotenv set .ddev/.env.web --rr-config-file=<file>` (`.env.web` is injected into the web container, so the supervisord-spawned daemon sees it — Phase-3 verified). `exec` keeps rr in the foreground for supervisord. nginx is repointed at RoadRunner by the markerless `nginx_full/nginx-site.conf` override (§3.2a), **not** a runtime hook — so there is no per-start patching and no startup window where traffic could hit php-fpm.
 
 ### 3.2a `nginx_full/nginx-site.conf` (the nginx override)
 
@@ -104,7 +105,7 @@ A copy of DDEV's default site config with **one** change: the app's PHP `fastcgi
 # ddev-roadrunner-managed   ← sentinel for the removal_action; do NOT write the literal generated-file marker token anywhere in this file
 server {
     listen 80 default_server; listen 443 ssl default_server;
-    root /var/www/html/public;                       # docroot `public` (Symfony default); edit if yours differs
+    root /var/www/html/public;                       # shipped default; post_install sets it to ${DDEV_DOCROOT} (the docroot knob)
     ssl_certificate /etc/ssl/certs/master.crt; ssl_certificate_key /etc/ssl/certs/master.key;
     include /etc/nginx/monitoring.conf;              # /phpstatus → php-fpm socket (unchanged)
     location / { try_files $uri $uri/ /index.php?$query_string; }
@@ -173,14 +174,14 @@ exec /usr/local/bin/rr "$@"
 
 ### 3.6 Fixtures / README / CI
 
-`example.rr.yaml` (§3.3). `tests/testdata/`: `bundles.php` (registers the bundle), `PingController.php` (`/` → `roadrunner-symfony-ok pid=<pid>`), `routes.yaml`, `psr7-index.php` (infra worker), `public-asset.txt`. README per §README. `.github/workflows/tests.yml` matrix `[stable, HEAD] × [symfony, infra, removal, php-gate]`. `.gitattributes` export-ignores `tests/ docs/ .github/ .idea/` (keeps `example.rr.yaml`).
+`example.rr.yaml` (§3.3). `tests/testdata/`: `bundles.php` (registers the bundle), `PingController.php` (`/` → `roadrunner-symfony-ok pid=<pid>`), `routes.yaml`, `psr7-index.php` (infra worker), `public-asset.txt`. README per §README. `.github/workflows/tests.yml` matrix `[stable, HEAD] × [symfony, infra, removal, php-gate, config]`. `.gitattributes` export-ignores `tests/ docs/ .github/ .idea/` (keeps `example.rr.yaml`).
 
 ## 4. Assumptions
 
 | # | Assumption | If wrong, then… |
 |---|------------|-----------------|
 | A1 | Target PHP 8.5 (bundle v5); add-on infra works on 8.1+ | Pin a bundle version for the project's PHP |
-| A2 | Symfony **docroot `public`**; the shipped override's `root` is `/var/www/html/public` (DDEV's symfony & php configs are byte-identical here) | Non-`public` docroots need the `root` line in the override edited (OQ-4) |
+| A2 | Override's `root` defaults to `public` but **post_install sets it to `${DDEV_DOCROOT}`** (the docroot knob), so any docroot works (DDEV's symfony & php configs are byte-identical here) — **VERIFIED** with `--docroot=web` | If `DDEV_DOCROOT` is unavailable to actions, fall back to grepping `.ddev/config.yaml` |
 | A3 | **VERIFIED:** nginx → FastCGI → RoadRunner:9000 serves the app (nginx terminates TLS, serves static) | — |
 | A4 | **VERIFIED:** a markerless `.ddev/nginx_full/nginx-site.conf` is respected by DDEV and held across the rebuild restart + repeated restarts (no runtime patching) | If a DDEV change starts overwriting markerless overrides, fall back to a `post-start` hook |
 | A5 | **VERIFIED:** the static `rr` binary runs on the Debian web image | — |
@@ -196,7 +197,7 @@ exec /usr/local/bin/rr "$@"
 | OQ-1 | *(Resolved)* "RR_RELAY / tcp / 0.0.0.0" = the `http.fcgi` listen address, not the goridge relay. Relay stays **pipes** (RR default; fastest). | No | Resolved |
 | OQ-2 | Auto-register the bundle / switch `.rr.yaml` to fcgi for the user, vs. document it (ADR-3/6)? | No | Document |
 | OQ-3 | Pin RR to `2025.1.14` or track latest? | No | Pin |
-| OQ-4 | Support non-`public` docroots (the override's nginx `root` assumes `public`)? | No | Assume `public`; document editing the override's `root` |
+| OQ-4 | *(Resolved)* Non-`public` docroots: post_install sets the override's `root` to `${DDEV_DOCROOT}` (default `public`); `RR_CONFIG_FILE` (default `.rr.yaml`) selects the rr config. Both **VERIFIED**. | No | Resolved |
 | OQ-5 | Stop php-fpm entirely (vs. let it idle)? | No | Let it idle (healthcheck depends on it) |
 
 ## 6. Anti-Patterns (DO NOT)
@@ -228,6 +229,7 @@ TC-001 YAML validity (`config.roadrunner.yaml`, `example.rr.yaml`); TC-002 `#dde
 | IT-002 (`infra`) | docroot public; `composer init`+`require spiral/roadrunner-http nyholm/psr7`; **write a FastCGI `.rr.yaml`**; `psr7-index.php`→`public/index.php`; `add-on get` (assert `.ddev/nginx_full/nginx-site.conf` exists); restart | `fastcgi_pass 127.0.0.1:9000`; `curl` → `RoadRunner OK pid=` (a raw PSR-7 worker **only** RoadRunner can serve — php-fpm would STDIN-fatal, so this is the strongest RR-serves proof); static asset served; `ddev rr reset` ok |
 | IT-003 (`removal`) | install (assert override present); `ddev add-on remove roadrunner`; restart | `config.roadrunner.yaml` gone; **`.ddev/nginx_full/nginx-site.conf` deleted by the removal_action**; nginx reverts to php-fpm; project `.rr.yaml` untouched |
 | IT-004 (`php-gate`) | `ddev config --php-version=8.0`; `ddev add-on get` | fails; output mentions PHP 8.1 |
+| IT-005 (`config`) | docroot **`web`**; `ddev dotenv set .ddev/.env.web --rr-config-file=.rr.fcgi.yaml`; raw worker + a custom-named `.rr.fcgi.yaml` (**no `.rr.yaml`**); `add-on get`; restart | override `root` is `/var/www/html/web` (docroot knob); `curl` → `RoadRunner OK pid=` with no `.rr.yaml` present proves RR loaded `.rr.fcgi.yaml` (config-path knob) |
 
 *IT-002 (`infra`) is the strongest RoadRunner-serves proof: a raw PSR-7 worker fatals under php-fpm (the goridge STDIN relay is a CLI-only constant), so a `RoadRunner OK pid=` 200 can only come from RoadRunner. IT-001 (`symfony`, the primary gate) proves it via the `fastcgi_pass 127.0.0.1:9000` override check + the `roadrunner` daemon RUNNING — a 200 alone would false-pass through php-fpm.*
 

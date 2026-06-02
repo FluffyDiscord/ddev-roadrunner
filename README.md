@@ -22,7 +22,7 @@ ddev-router ──TLS──► nginx ──fastcgi_pass 127.0.0.1:9000──► 
 ```
 
 - `webserver_type` stays **`nginx-fpm`**: nginx terminates TLS, serves static files, and proxies PHP over FastCGI to RoadRunner — the same role it plays for php-fpm.
-- The add-on installs `.ddev/nginx_full/nginx-site.conf` — a copy of DDEV's own site config with just the app's PHP `fastcgi_pass` pointed at RoadRunner (`127.0.0.1:9000`). It carries no DDEV generated-file marker, so DDEV treats it as a user override and never regenerates it: the routing is stable across restarts with no runtime patching. `ddev add-on remove roadrunner` deletes it and DDEV restores the php-fpm default. (Assumes docroot `public`; edit `root` in that file if yours differs.)
+- The add-on installs `.ddev/nginx_full/nginx-site.conf` — a copy of DDEV's own site config with just the app's PHP `fastcgi_pass` pointed at RoadRunner (`127.0.0.1:9000`). It carries no DDEV generated-file marker, so DDEV treats it as a user override and never regenerates it: the routing is stable across restarts with no runtime patching. `ddev add-on remove roadrunner` deletes it and DDEV restores the php-fpm default. Its `root` is set to your project's docroot at install time (see [Configuration](#configuration)).
 - php-fpm stays running but **idle** — DDEV's container healthcheck (`/phpstatus`) and the `/xhprof` UI keep using it; your app traffic goes to RoadRunner.
 
 ## Requirements
@@ -93,6 +93,17 @@ Composer skips third-party (contrib) Flex recipes in non-interactive mode. Do th
 Then do steps 2 and 4 above. *(Symptom of a missing registration: a 500 with `non-existent service "FluffyDiscord\RoadRunnerBundle\Worker\WorkerRegistry"`.)*
 </details>
 
+## Configuration
+
+Two values have sensible defaults but are adjustable:
+
+| What | Default | How to change |
+|---|---|---|
+| **Docroot** (the nginx override's `root`) | `public` (your `ddev config --docroot`) | Set at install from your project's docroot. To change later, edit `root` in `.ddev/nginx_full/nginx-site.conf` and `ddev restart` (or re-run `ddev add-on get` after `ddev config --docroot=…`). |
+| **RoadRunner config file** (which file `rr` loads) | `.rr.yaml` | `ddev dotenv set .ddev/.env.web --rr-config-file=.rr.dev.yaml && ddev restart` |
+
+The config-file knob is handy for keeping separate dev/prod RoadRunner configs in one repo (e.g. a debug-pool `.rr.dev.yaml` vs. a worker-pool `.rr.yaml`).
+
 ## Usage
 
 | Command | Description |
@@ -104,7 +115,7 @@ Then do steps 2 and 4 above. *(Symptom of a missing registration: a 500 with `no
 
 ## The `.rr.yaml` file
 
-RoadRunner reads **your project's own `.rr.yaml`** (project root). DDEV bind-mounts it, so it's **live and editable** — change it and `ddev restart` (or `ddev rr reset`). **The add-on does not copy or manage it** (no `#ddev-generated` marker) — it's entirely yours. For this add-on it must expose `http.fcgi.address: tcp://0.0.0.0:9000` (see step 3).
+RoadRunner reads **your project's own `.rr.yaml`** (project root). DDEV bind-mounts it, so it's **live and editable** — change it and `ddev restart` (or `ddev rr reset`). **The add-on does not copy or manage it** (no `#ddev-generated` marker) — it's entirely yours. For this add-on it must expose `http.fcgi.address: tcp://0.0.0.0:9000` (see step 3). To load a differently-named file, set `RR_CONFIG_FILE` (see [Configuration](#configuration)).
 
 ## Development vs. production
 
