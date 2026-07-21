@@ -1,6 +1,6 @@
 # DDEV RoadRunner Add-on — Implementation Spec (Implementation)
 
-**Source pinned to:** 2026-06-01, pin refreshed 2026-07-21 · DDEV `v1.25.1` (constraint `>= v1.24.10`) · RoadRunner server `2025.1.15` · `fluffydiscord/roadrunner-symfony-bundle` `v5.0.0` (PHP 8.5+, Symfony 7.4/8).
+**Source pinned to:** 2026-06-01 · DDEV `v1.25.1` (constraint `>= v1.24.10`) · RoadRunner server `2025.1.15`, refreshed and re-verified 2026-07-21 — **that refresh covered the RoadRunner tag only; every other record below still dates from 2026-06-01** · `fluffydiscord/roadrunner-symfony-bundle`: the records below were produced against `v5.0.0` (PHP 8.5+), but IT-001 installs the bundle unconstrained, so CI has in fact been exercising `v6.1.0` (PHP **8.4**+, Symfony 7.4/8) since 2026-06-22 — see OQ-6.
 **Document type:** Implementation. Strategy/ADRs live in [Strategic Blueprint](./01-strategic-blueprint.md).
 
 Every claim about an *external* system carries a citation in [§9](#9-references-external-sources). Design decisions are governed by Assumptions ([§4](#4-assumptions)) and Open Questions ([§5](#5-open-questions)).
@@ -155,7 +155,9 @@ COPY --from=ghcr.io/roadrunner-server/roadrunner:2025.1.15 /usr/bin/rr /usr/loca
 RUN chmod +x /usr/local/bin/rr && rr --version
 ```
 
-*Phase-3 verified:* static Go binary runs on the Debian web image; `rr --version` → `rr version 2025.1.14`, the build that produced this record. The pin now reads `2025.1.15` (patch release: Go toolchain 1.26.4 for CVE-2026-42504, no protocol or config change); the Dockerfile's own `rr --version` re-asserts it on the next build.
+*Phase-3 verified:* the static Go binary runs on the Debian web image. Re-verified on `2025.1.15` by CI run `29833458625` (push to master, 2026-07-21, green across the full matrix — every leg builds the image and runs IT-001 live).
+
+*Delta `2025.1.14` → `2025.1.15`*, read from the tag comparison rather than the release body: Go toolchain `1.26.3 → 1.26.4` for CVE-2026-42504 (a Go stdlib `mime` decoder DoS — malformed encoded-words burn CPU — so it lands on the header-decoding path RoadRunner actually exercises), plus `roadrunner-server/otel/v5 v5.5.0 → v5.6.0`, which the release notes omit. No first-party Go source changed. The release body's trailing "fiber / fileserver" sentence is boilerplate carried over from `2025.1.14` and does not describe this CVE. Neither this add-on nor `example.rr.yaml` configures an `otel:` block, so that dependency delta is outside our blast radius.
 
 ### 3.5 `commands/web/rr`
 
@@ -184,9 +186,9 @@ exec /usr/local/bin/rr "$@"
 | A2 | Override's `root` defaults to `public` but **post_install sets it to `${DDEV_DOCROOT}`** (the docroot knob), so any docroot works (DDEV's symfony & php configs are byte-identical here) — **VERIFIED** with `--docroot=web` | If `DDEV_DOCROOT` is unavailable to actions, fall back to grepping `.ddev/config.yaml` |
 | A3 | **VERIFIED:** nginx → FastCGI → RoadRunner:9000 serves the app (nginx terminates TLS, serves static) | — |
 | A4 | **VERIFIED:** a markerless `.ddev/nginx_full/nginx-site.conf` is respected by DDEV and held across the rebuild restart + repeated restarts (no runtime patching) | If a DDEV change starts overwriting markerless overrides, fall back to a `post-start` hook |
-| A5 | **VERIFIED:** the static `rr` binary runs on the Debian web image | — |
+| A5 | **VERIFIED on the `2025.1.15` binary** (built with Go 1.26.4; the original 2026-06-01 run used 1.26.3) — the static `rr` binary runs on the Debian web image | The Dockerfile's `rr --version` fails the build immediately; revert to the last green tag |
 | A6 | Infra-only; no app/`.rr.yaml` mutation (ADR-3/6); the only nginx change is the markerless override file the add-on owns | — |
-| A7 | **VERIFIED** on RR `2025.1.14`: protocol-compatible with the bundle. The pin now reads `2025.1.15`, a patch release inside the same `^v2025` constraint, not independently re-run | Re-run IT-001 before releasing any bump that leaves the `2025.1.x` line |
+| A7 | **VERIFIED on RR `2025.1.15`** (CI run `29833458625`): protocol-compatible with the bundle; `spiral/roadrunner ^v2025 \|\| ^3` still covers it | Symfony boots but the goridge handshake fails (IT-001 → 502): revert to the last green tag. Re-run IT-001 before any bump that leaves the `2025.1.x` line |
 | A8 | php-fpm idling under `nginx-fpm` is harmless and required (healthcheck `/phpstatus`, `/xhprof`) — do not disable it | — |
 | A9 | The project's `.rr.yaml` uses `http.fcgi:9000` (recipe default is `http.address` → user switches it, or copies `example.rr.yaml`) | nginx FastCGI → an HTTP-mode RR fails; post_install warns; user sets `http.fcgi` |
 
@@ -199,6 +201,7 @@ exec /usr/local/bin/rr "$@"
 | OQ-3 | Pin RR to an explicit tag or track latest? | No | Pin (currently `2025.1.15`) |
 | OQ-4 | *(Resolved)* Non-`public` docroots: post_install sets the override's `root` to `${DDEV_DOCROOT}` (default `public`); `RR_CONFIG_FILE` (default `.rr.yaml`) selects the rr config. Both **VERIFIED**. | No | Resolved |
 | OQ-5 | Stop php-fpm entirely (vs. let it idle)? | No | Let it idle (healthcheck depends on it) |
+| OQ-6 | Move the docs and the `install.yaml` PHP gate from bundle `v5.0.0` (PHP 8.5+) to `v6.1.0` (PHP 8.4+)? | No — but `install.yaml:22` currently warns spuriously on PHP 8.4, where `v6.1.0` installs fine, and `README.md:34` states the wrong floor | Update to v6; alternatively constrain `test.bats:53` to `:^5.0` so CI matches the docs. The repo must not keep claiming v5 while CI installs v6 |
 
 ## 6. Anti-Patterns (DO NOT)
 
