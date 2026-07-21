@@ -58,7 +58,7 @@ nginx terminates TLS, serves static files, and proxies PHP to RoadRunner over Fa
 
 | Component | Choice | Rationale (tied to constraints) |
 |-----------|--------|---------------------------------|
-| App server | RoadRunner server binary, pinned `2025.1.14` | Compatible with the bundle's `spiral/roadrunner ^v2025\|\|^3`; Go static binary → portable from the official Alpine image into Debian web image |
+| App server | RoadRunner server binary, pinned `2025.1.15` | Compatible with the bundle's `spiral/roadrunner ^v2025\|\|^3`; Go static binary → portable from the official Alpine image into Debian web image |
 | Binary delivery | Multi-stage `COPY --from=ghcr.io/roadrunner-server/roadrunner:<tag>` | Reproducible + pinned + arch-correct (buildx resolves host arch); no build-time download script |
 | PHP | DDEV web image, **NTS**, target 8.5 | RoadRunner needs no ZTS (standard NTS PHP); bundle v5 requires 8.5+; `ext-sockets` already present |
 | Symfony↔RR bridge | `fluffydiscord/roadrunner-symfony-bundle` | The user's own bundle; canonical for this integration |
@@ -94,7 +94,7 @@ nginx terminates TLS, serves static files, and proxies PHP to RoadRunner over Fa
 *Why:* nginx (TLS, static, the symfony front-controller config, `/phpstatus`, `/xhprof`) is reused as-is; only the PHP backend changes (php-fpm → RoadRunner), matching how the user runs RR in prod. *Trade-off:* php-fpm idles, and the nginx override is a static file (frozen at the add-on's version — it won't track future DDEV nginx-template changes while installed; acceptable, and reverts on removal — see ADR-4).
 
 **ADR-2 — Deliver the `rr` binary via multi-stage `COPY --from` from the official image.**
-*Decision:* `COPY --from=ghcr.io/roadrunner-server/roadrunner:2025.1.14 /usr/bin/rr /usr/local/bin/rr`.
+*Decision:* `COPY --from=ghcr.io/roadrunner-server/roadrunner:2025.1.15 /usr/bin/rr /usr/local/bin/rr`.
 *Why:* Reproducible and pinned; buildx pulls the host-arch variant; RR is a static Go binary so the Alpine-built binary runs on the Debian web image. *Alternatives rejected:* `composer ... get-binary` (needs ext-curl/zip + network at the right moment, ties version to the project) and the `download-latest.sh` script (writes to CWD, no pin). *Verification:* the Dockerfile runs `rr --version`, so a bad/incompatible binary fails the build immediately.
 
 **ADR-3 — The add-on does NOT manage `.rr.yaml`; RoadRunner uses the project's own bind-mounted file.** *(Revised per bundle-author direction; supersedes the earlier "copy it into the project root" approach.)*

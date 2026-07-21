@@ -1,6 +1,6 @@
 # DDEV RoadRunner Add-on — Implementation Spec (Implementation)
 
-**Source pinned to:** 2026-06-01 · DDEV `v1.25.1` (constraint `>= v1.24.10`) · RoadRunner server `2025.1.14` · `fluffydiscord/roadrunner-symfony-bundle` `v5.0.0` (PHP 8.5+, Symfony 7.4/8).
+**Source pinned to:** 2026-06-01, pin refreshed 2026-07-21 · DDEV `v1.25.1` (constraint `>= v1.24.10`) · RoadRunner server `2025.1.15` · `fluffydiscord/roadrunner-symfony-bundle` `v5.0.0` (PHP 8.5+, Symfony 7.4/8).
 **Document type:** Implementation. Strategy/ADRs live in [Strategic Blueprint](./01-strategic-blueprint.md).
 
 Every claim about an *external* system carries a citation in [§9](#9-references-external-sources). Design decisions are governed by Assumptions ([§4](#4-assumptions)) and Open Questions ([§5](#5-open-questions)).
@@ -151,11 +151,11 @@ rpc:
 
 ```dockerfile
 #ddev-generated
-COPY --from=ghcr.io/roadrunner-server/roadrunner:2025.1.14 /usr/bin/rr /usr/local/bin/rr
+COPY --from=ghcr.io/roadrunner-server/roadrunner:2025.1.15 /usr/bin/rr /usr/local/bin/rr
 RUN chmod +x /usr/local/bin/rr && rr --version
 ```
 
-*Phase-3 verified:* static Go binary runs on the Debian web image; `rr --version` → `rr version 2025.1.14`.
+*Phase-3 verified:* static Go binary runs on the Debian web image; `rr --version` → `rr version 2025.1.14`, the build that produced this record. The pin now reads `2025.1.15` (patch release: Go toolchain 1.26.4 for CVE-2026-42504, no protocol or config change); the Dockerfile's own `rr --version` re-asserts it on the next build.
 
 ### 3.5 `commands/web/rr`
 
@@ -186,7 +186,7 @@ exec /usr/local/bin/rr "$@"
 | A4 | **VERIFIED:** a markerless `.ddev/nginx_full/nginx-site.conf` is respected by DDEV and held across the rebuild restart + repeated restarts (no runtime patching) | If a DDEV change starts overwriting markerless overrides, fall back to a `post-start` hook |
 | A5 | **VERIFIED:** the static `rr` binary runs on the Debian web image | — |
 | A6 | Infra-only; no app/`.rr.yaml` mutation (ADR-3/6); the only nginx change is the markerless override file the add-on owns | — |
-| A7 | **VERIFIED:** RR `2025.1.14` is protocol-compatible with the bundle | — |
+| A7 | **VERIFIED** on RR `2025.1.14`: protocol-compatible with the bundle. The pin now reads `2025.1.15`, a patch release inside the same `^v2025` constraint, not independently re-run | Re-run IT-001 before releasing any bump that leaves the `2025.1.x` line |
 | A8 | php-fpm idling under `nginx-fpm` is harmless and required (healthcheck `/phpstatus`, `/xhprof`) — do not disable it | — |
 | A9 | The project's `.rr.yaml` uses `http.fcgi:9000` (recipe default is `http.address` → user switches it, or copies `example.rr.yaml`) | nginx FastCGI → an HTTP-mode RR fails; post_install warns; user sets `http.fcgi` |
 
@@ -196,7 +196,7 @@ exec /usr/local/bin/rr "$@"
 |---|----------|--------|---------|
 | OQ-1 | *(Resolved)* "RR_RELAY / tcp / 0.0.0.0" = the `http.fcgi` listen address, not the goridge relay. Relay stays **pipes** (RR default; fastest). | No | Resolved |
 | OQ-2 | Auto-register the bundle / switch `.rr.yaml` to fcgi for the user, vs. document it (ADR-3/6)? | No | Document |
-| OQ-3 | Pin RR to `2025.1.14` or track latest? | No | Pin |
+| OQ-3 | Pin RR to an explicit tag or track latest? | No | Pin (currently `2025.1.15`) |
 | OQ-4 | *(Resolved)* Non-`public` docroots: post_install sets the override's `root` to `${DDEV_DOCROOT}` (default `public`); `RR_CONFIG_FILE` (default `.rr.yaml`) selects the rr config. Both **VERIFIED**. | No | Resolved |
 | OQ-5 | Stop php-fpm entirely (vs. let it idle)? | No | Let it idle (healthcheck depends on it) |
 
