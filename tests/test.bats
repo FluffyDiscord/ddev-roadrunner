@@ -92,8 +92,11 @@ teardown() {
   run ddev exec supervisorctl status
   assert_output --regexp 'webextradaemons:roadrunner[[:space:]]+RUNNING'
 
+  # Asserts the pinned version, not merely that a binary runs — otherwise a stale
+  # or silently re-pointed tag passes. Bump alongside web-build/Dockerfile.roadrunner.
   run ddev exec /usr/local/bin/rr --version
   assert_success
+  assert_output --partial "2025.1.15"
 }
 
 # bats test_tags=infra
